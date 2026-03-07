@@ -39,10 +39,11 @@ struct PublicIP {
 
 class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private var speedTestTimer: Timer?
-    private var networkUsageTimer: Timer?
-    private var displayToggleTimer: Timer?
-    private var networkChangeTimer: Timer?
+    private var speedTestTimer: DispatchSourceTimer?
+    private var networkUsageTimer: DispatchSourceTimer?
+    private var networkChangeTimer: DispatchSourceTimer?
+    // Dispatch-based toggle timer (more reliable)
+    private var toggleDispatchSource: DispatchSourceTimer?
     private var lastResult: SpeedTestResult?
     private var currentUsage: NetworkUsage?
     private var publicIP: PublicIP?
@@ -68,6 +69,9 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     private var refreshIPItem: NSMenuItem!
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory) // Menu bar app
+        NSApp.activate(ignoringOtherApps: true)
+        
         setupStatusBar()
         setupMenu()
         startMonitoring()
@@ -96,10 +100,12 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         
         // Public IP section
-        ipv4Item = NSMenuItem(title: "IPv4: Detecting...", action: nil, keyEquivalent: "")
+        ipv4Item = NSMenuItem(title: "IPv4: Detecting...", action: #selector(copyIPv4), keyEquivalent: "")
+        ipv4Item.target = self
         menu.addItem(ipv4Item)
         
-        ipv6Item = NSMenuItem(title: "IPv6: Detecting...", action: nil, keyEquivalent: "")
+        ipv6Item = NSMenuItem(title: "IPv6: Detecting...", action: #selector(copyIPv6), keyEquivalent: "")
+        ipv6Item.target = self
         menu.addItem(ipv6Item)
         
         refreshIPItem = NSMenuItem(title: "Refresh IP", action: #selector(refreshPublicIP), keyEquivalent: "")
@@ -144,14 +150,22 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         updateIntervalMenu()
     }
     
+    private func makeDispatchTimer(interval: TimeInterval, block: @escaping () -> Void) -> DispatchSourceTimer {
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + interval, repeating: interval)
+        timer.setEventHandler { block() }
+        timer.resume()
+        return timer
+    }
+
     private func startMonitoring() {
         // Start network usage monitoring (every 1 second)
-        networkUsageTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        networkUsageTimer = makeDispatchTimer(interval: 1.0) { [weak self] in
             self?.updateNetworkUsage()
         }
         
         // Start network change detection (every 5 seconds)
-        networkChangeTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        networkChangeTimer = makeDispatchTimer(interval: 5.0) { [weak self] in
             self?.checkNetworkChange()
         }
         
@@ -163,18 +177,17 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
             self.updatePublicIP()
         }
         
-        // Run initial speed test after 2 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.runSpeedTest()
-        }
+        // Run initial speed test immediately on start
+        runSpeedTest()
+        showingSpeedTest = true // Start in speed test mode
         
         // Set up recurring speed tests
-        speedTestTimer = Timer.scheduledTimer(withTimeInterval: testInterval.rawValue, repeats: true) { [weak self] _ in
+        speedTestTimer = makeDispatchTimer(interval: testInterval.rawValue) { [weak self] in
             self?.runSpeedTest()
         }
         
         // Start display toggle (5 seconds each)
-        displayToggleTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        toggleDispatchSource = makeDispatchTimer(interval: 5.0) { [weak self] in
             self?.toggleDisplay()
         }
     }
@@ -186,34 +199,30 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     }
     
     private func updateNetworkUsage() {
-        let iface = lastNetworkInterface.isEmpty ? "en0" : lastNetworkInterface
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            self?.readAndPublishNetworkUsage(for: iface)
-        }
-    }
-
-    private func readAndPublishNetworkUsage(for iface: String) {
+        let iface = (lastNetworkInterface.isEmpty || lastNetworkInterface == "unknown") ? "en0" : lastNetworkInterface
         guard let (bytesReceived, bytesSent) = getByteCounts(for: iface) else { return }
 
         let currentTime = Date()
+        let timeInterval = currentTime.timeIntervalSince(lastNetworkUpdateTime)
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let timeInterval = currentTime.timeIntervalSince(self.lastNetworkUpdateTime)
+        if timeInterval > 0 && lastBytesReceived > 0 {
+            let downloadSpeed = max(0, Double(bytesReceived - lastBytesReceived) / timeInterval)
+            let uploadSpeed   = max(0, Double(bytesSent   - lastBytesSent)   / timeInterval)
 
-            if timeInterval > 0 && self.lastBytesReceived > 0 {
-                let downloadSpeed = max(0, Double(bytesReceived - self.lastBytesReceived) / timeInterval)
-                let uploadSpeed   = max(0, Double(bytesSent   - self.lastBytesSent)   / timeInterval)
+            let usage = NetworkUsage(downloadSpeed: downloadSpeed, uploadSpeed: uploadSpeed, timestamp: currentTime)
+            currentUsage = usage
 
-                let usage = NetworkUsage(downloadSpeed: downloadSpeed, uploadSpeed: uploadSpeed, timestamp: currentTime)
-                self.currentUsage = usage
-                self.updateCurrentUsageItem(usage: usage)
+            let down = formatNetworkSpeed(speed: downloadSpeed)
+            let up   = formatNetworkSpeed(speed: uploadSpeed)
+            currentUsageItem.title = "Current: \u{2193}\(down) \u{2191}\(up)"
+            if !showingSpeedTest {
+                statusItem.button?.title = "\u{2193}\(down) \u{2191}\(up)"
             }
-
-            self.lastBytesReceived     = bytesReceived
-            self.lastBytesSent         = bytesSent
-            self.lastNetworkUpdateTime = currentTime
         }
+
+        lastBytesReceived     = bytesReceived
+        lastBytesSent         = bytesSent
+        lastNetworkUpdateTime = currentTime
     }
 
     private func getByteCounts(for interfaceName: String) -> (received: Int64, sent: Int64)? {
@@ -241,21 +250,7 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
 
         return found ? (received, sent) : nil
     }
-    
-    private func updateCurrentUsageItem(usage: NetworkUsage) {
-        let downloadText = formatNetworkSpeed(speed: usage.downloadSpeed)
-        let uploadText = formatNetworkSpeed(speed: usage.uploadSpeed)
-        
-        DispatchQueue.main.async {
-            self.currentUsageItem.title = "Current: ↓\(downloadText) ↑\(uploadText)"
-            
-            // Update menu bar with current usage when not showing speed test
-            if !self.showingSpeedTest {
-                self.statusItem.button?.title = "↓\(downloadText) ↑\(uploadText)"
-            }
-        }
-    }
-    
+
     private func formatNetworkSpeed(speed: Double) -> String {
         if speed >= 1024 * 1024 {
             return String(format: "%.1fM", speed / (1024 * 1024))
@@ -276,6 +271,10 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         let interface = getCurrentNetworkInterface()
         lastNetworkInterface = interface
         lastNetworkIP = getCurrentNetworkIP(for: interface)
+        if let (recv, sent) = getByteCounts(for: interface) {
+            lastBytesReceived = recv
+            lastBytesSent     = sent
+        }
     }
     
     private func checkNetworkChange() {
@@ -304,28 +303,29 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     }
     
     private func getCurrentNetworkInterface() -> String {
-        let task = Process()
-        task.launchPath = "/usr/sbin/netstat"
-        task.arguments = ["-rn", "-f", "inet"]
-        
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.launch()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        
-        // Look for default route interface
-        let lines = output.components(separatedBy: "\n")
-        for line in lines {
-            if line.hasPrefix("default") || line.hasPrefix("0.0.0.0") {
-                let components = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                if components.count >= 6 {
-                    return components[5] // Interface name
+        do {
+            let task = Process()
+            task.launchPath = "/sbin/route"
+            task.arguments = ["get", "default"]
+
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = Pipe()
+            try task.run()
+            task.waitUntilExit()
+
+            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+            for line in output.components(separatedBy: "\n") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("interface:") {
+                    let iface = trimmed.replacingOccurrences(of: "interface:", with: "").trimmingCharacters(in: .whitespaces)
+                    if !iface.isEmpty { return iface }
                 }
             }
+        } catch {
+            // Process failed, fall back to default
         }
-        
         return "unknown"
     }
     
@@ -335,25 +335,30 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
             return "no_ip"
         }
         
-        let task = Process()
-        task.launchPath = "/usr/sbin/ifconfig"
-        task.arguments = [iface]
-        
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.launch()
-        
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        
-        for line in output.components(separatedBy: "\n") {
-            if line.contains("inet ") && !line.contains("inet 127.0.0.1") {
-                let parts = line.components(separatedBy: .whitespaces)
-                if let idx = parts.firstIndex(of: "inet"), idx + 1 < parts.count {
-                    return parts[idx + 1]
+        do {
+            let task = Process()
+            task.launchPath = "/usr/sbin/ifconfig"
+            task.arguments = [iface]
+            
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            task.standardError = Pipe()
+            try task.run()
+            task.waitUntilExit()
+            
+            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            
+            for line in output.components(separatedBy: "\n") {
+                if line.contains("inet ") && !line.contains("inet 127.0.0.1") {
+                    let parts = line.components(separatedBy: .whitespaces)
+                    if let idx = parts.firstIndex(of: "inet"), idx + 1 < parts.count {
+                        return parts[idx + 1]
+                    }
                 }
             }
+        } catch {
+            // Process failed, fall back to default
         }
-        
         return "no_ip"
     }
     
@@ -370,8 +375,28 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         publicIP = ip
         
         DispatchQueue.main.async {
-            self.ipv4Item.title = "IPv4: \(ipv4)"
-            self.ipv6Item.title = "IPv6: \(ipv6)"
+            self.ipv4Item.title = "IPv4: \(ipv4)  (click to copy)"
+            self.ipv6Item.title = "IPv6: \(ipv6)  (click to copy)"
+        }
+    }
+
+    @objc private func copyIPv4() {
+        guard let ip = publicIP?.ipv4 else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(ip, forType: .string)
+        ipv4Item.title = "IPv4: \(ip)  ✓ Copied!"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            self.ipv4Item.title = "IPv4: \(ip)  (click to copy)"
+        }
+    }
+
+    @objc private func copyIPv6() {
+        guard let ip = publicIP?.ipv6 else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(ip, forType: .string)
+        ipv6Item.title = "IPv6: \(ip)  ✓ Copied!"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            self.ipv6Item.title = "IPv6: \(ip)  (click to copy)"
         }
     }
     
@@ -451,15 +476,15 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
             if let result = lastResult {
                 showSpeedTestResult(result: result)
             } else {
-                statusItem.button?.title = "No speed test yet"
+                statusItem.button?.title = "No test yet"
             }
         } else {
             if let usage = currentUsage {
                 let down = formatNetworkSpeed(speed: usage.downloadSpeed)
                 let up   = formatNetworkSpeed(speed: usage.uploadSpeed)
-                statusItem.button?.title = "↓\(down) ↑\(up)"
+                statusItem.button?.title = "\u{2193}\(down) \u{2191}\(up)"
             } else {
-                statusItem.button?.title = "Ready"
+                statusItem.button?.title = "\u{2193}-- \u{2191}--"
             }
         }
     }
@@ -536,36 +561,44 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     }
     
     private func measureUploadSpeed() -> Double {
-        // Simple upload test using httpbin.org
-        guard let url = URL(string: "https://httpbin.org/post") else { return 0 }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        
-        // Create 1MB of test data
-        let testData = Data(repeating: 0, count: 1024 * 1024)
-        request.httpBody = testData
-        
-        let startTime = Date()
-        let semaphore = DispatchSemaphore(value: 0)
-        var success = false
-        
-        let task = URLSession.shared.dataTask(with: request) { _, response, error in
-            success = (error == nil && (response as? HTTPURLResponse)?.statusCode == 200)
-            semaphore.signal()
+        let endpoints = [
+            "https://speed.cloudflare.com/__up",
+            "https://httpbin.org/post"
+        ]
+
+        // 5MB payload — large enough that connection overhead (~100–300ms) is
+        // a small fraction of total transfer time even on slower connections.
+        let testData = Data(repeating: 0x55, count: 5 * 1024 * 1024)
+
+        for urlString in endpoints {
+            guard let url = URL(string: urlString) else { continue }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+            request.httpBody = testData
+            request.timeoutInterval = 30
+
+            let startTime = Date()
+            let semaphore = DispatchSemaphore(value: 0)
+            var statusCode = 0
+
+            URLSession.shared.dataTask(with: request) { _, response, error in
+                if error == nil {
+                    statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+                }
+                semaphore.signal()
+            }.resume()
+
+            semaphore.wait()
+            let timeInterval = Date().timeIntervalSince(startTime)
+
+            if (200...299).contains(statusCode) && timeInterval > 0 {
+                let bitsPerSecond = Double(testData.count * 8) / timeInterval
+                return bitsPerSecond / 1_000_000 // Convert to Mbps
+            }
         }
-        
-        task.resume()
-        semaphore.wait()
-        
-        let endTime = Date()
-        let timeInterval = endTime.timeIntervalSince(startTime)
-        
-        if success && timeInterval > 0 {
-            let bitsPerSecond = Double(testData.count * 8) / timeInterval
-            return bitsPerSecond / 1_000_000 // Convert to Mbps
-        }
-        
+
         return 0
     }
     
@@ -590,8 +623,8 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     private func setInterval(_ interval: TestInterval) {
         testInterval = interval
         
-        speedTestTimer?.invalidate()
-        speedTestTimer = Timer.scheduledTimer(withTimeInterval: testInterval.rawValue, repeats: true) { [weak self] _ in
+        speedTestTimer?.cancel()
+        speedTestTimer = makeDispatchTimer(interval: testInterval.rawValue) { [weak self] in
             self?.runSpeedTest()
         }
         
@@ -605,10 +638,10 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     }
     
     func applicationWillTerminate(_ notification: Notification) {
-        speedTestTimer?.invalidate()
-        networkUsageTimer?.invalidate()
-        displayToggleTimer?.invalidate()
-        networkChangeTimer?.invalidate()
+        speedTestTimer?.cancel()
+        networkUsageTimer?.cancel()
+        toggleDispatchSource?.cancel()
+        networkChangeTimer?.cancel()
     }
 }
 

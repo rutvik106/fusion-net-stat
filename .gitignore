@@ -1,8 +1,37 @@
+# Build artifacts
 SpeedTestMonitor
 NetworkMonitor
 NetworkMonitorV2
 TestNetworkOnly
 *.o
+*.build
+
+# DMG files
+*.dmg
+
+# Temporary files
+dmg_temp/
+*.tmp
+*.temp
+
+# Logs
 *.log
 *.err
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backup files
+*~
+*.bak
+*.backup
