@@ -26,11 +26,6 @@ INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "🔨 Building SpeedTestMonitor..."
 swiftc -o "$INSTALL_DIR/SpeedTestMonitor" "$INSTALL_DIR/SpeedTestMonitor.swift" -framework Cocoa -framework Foundation
 
-if [ $? -ne 0 ]; then
-    echo "❌ Build failed. Please check the error above."
-    exit 1
-fi
-
 echo "✅ Build successful."
 echo ""
 
@@ -38,7 +33,7 @@ echo ""
 pkill -f SpeedTestMonitor 2>/dev/null || true
 
 # Create Launch Agent plist for auto-start on login
-PLIST_PATH="$HOME/Library/LaunchAgents/com.speedtestmonitor.plist"
+PLIST_PATH="$HOME/Library/LaunchAgents/com.fusionnetstat.plist"
 BINARY_PATH="$INSTALL_DIR/SpeedTestMonitor"
 
 echo "📝 Setting up auto-start on login..."
@@ -49,7 +44,7 @@ cat > "$PLIST_PATH" << EOF
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.speedtestmonitor</string>
+    <string>com.fusionnetstat</string>
     <key>ProgramArguments</key>
     <array>
         <string>$BINARY_PATH</string>

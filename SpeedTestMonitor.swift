@@ -1,5 +1,22 @@
 import Cocoa
 import Foundation
+import Darwin
+
+enum TestInterval: TimeInterval, CaseIterable {
+    case fiveMinutes   = 300
+    case tenMinutes    = 600
+    case thirtyMinutes = 1800
+    case oneHour       = 3600
+
+    var title: String {
+        switch self {
+        case .fiveMinutes:   return "Every 5 minutes"
+        case .tenMinutes:    return "Every 10 minutes"
+        case .thirtyMinutes: return "Every 30 minutes"
+        case .oneHour:       return "Every hour"
+        }
+    }
+}
 
 struct SpeedTestResult {
     let downloadSpeed: Double  // Mbps
@@ -29,7 +46,7 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     private var lastResult: SpeedTestResult?
     private var currentUsage: NetworkUsage?
     private var publicIP: PublicIP?
-    private var testInterval: TimeInterval = 300 // 5 minutes default
+    private var testInterval: TestInterval = .fiveMinutes
     private var showingSpeedTest = false // Toggle state
     
     // Network change detection
@@ -42,10 +59,7 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     private var lastNetworkUpdateTime: Date = Date()
     
     // Menu items
-    private var interval5Item: NSMenuItem!
-    private var interval10Item: NSMenuItem!
-    private var interval30Item: NSMenuItem!
-    private var interval60Item: NSMenuItem!
+    private var intervalMenuItems: [TestInterval: NSMenuItem] = [:]
     private var testNowItem: NSMenuItem!
     private var lastTestItem: NSMenuItem!
     private var currentUsageItem: NSMenuItem!
@@ -97,21 +111,18 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         // Interval options
         let intervalMenu = NSMenu()
         
-        interval5Item = NSMenuItem(title: "Every 5 minutes", action: #selector(setInterval5), keyEquivalent: "")
-        interval5Item.target = self
-        intervalMenu.addItem(interval5Item)
-        
-        interval10Item = NSMenuItem(title: "Every 10 minutes", action: #selector(setInterval10), keyEquivalent: "")
-        interval10Item.target = self
-        intervalMenu.addItem(interval10Item)
-        
-        interval30Item = NSMenuItem(title: "Every 30 minutes", action: #selector(setInterval30), keyEquivalent: "")
-        interval30Item.target = self
-        intervalMenu.addItem(interval30Item)
-        
-        interval60Item = NSMenuItem(title: "Every hour", action: #selector(setInterval60), keyEquivalent: "")
-        interval60Item.target = self
-        intervalMenu.addItem(interval60Item)
+        let intervalActions: [(TestInterval, Selector)] = [
+            (.fiveMinutes,   #selector(setInterval5)),
+            (.tenMinutes,    #selector(setInterval10)),
+            (.thirtyMinutes, #selector(setInterval30)),
+            (.oneHour,       #selector(setInterval60))
+        ]
+        for (interval, action) in intervalActions {
+            let item = NSMenuItem(title: interval.title, action: action, keyEquivalent: "")
+            item.target = self
+            intervalMenu.addItem(item)
+            intervalMenuItems[interval] = item
+        }
         
         let intervalItem = NSMenuItem(title: "Test Interval", action: nil, keyEquivalent: "")
         intervalItem.submenu = intervalMenu
@@ -135,13 +146,13 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     
     private func startMonitoring() {
         // Start network usage monitoring (every 1 second)
-        networkUsageTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            self.updateNetworkUsage()
+        networkUsageTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.updateNetworkUsage()
         }
         
         // Start network change detection (every 5 seconds)
-        networkChangeTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
-            self.checkNetworkChange()
+        networkChangeTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            self?.checkNetworkChange()
         }
         
         // Initialize network state
@@ -153,18 +164,18 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         }
         
         // Run initial speed test after 2 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            self.runSpeedTest()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.runSpeedTest()
         }
         
         // Set up recurring speed tests
-        speedTestTimer = Timer.scheduledTimer(withTimeInterval: testInterval, repeats: true) { _ in
-            self.runSpeedTest()
+        speedTestTimer = Timer.scheduledTimer(withTimeInterval: testInterval.rawValue, repeats: true) { [weak self] _ in
+            self?.runSpeedTest()
         }
         
         // Start display toggle (5 seconds each)
-        displayToggleTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
-            self.toggleDisplay()
+        displayToggleTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            self?.toggleDisplay()
         }
     }
     
@@ -175,55 +186,60 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     }
     
     private func updateNetworkUsage() {
-        let task = Process()
-        task.launchPath = "/usr/sbin/netstat"
-        task.arguments = ["-I", "en0", "-b"]
-        
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.launch()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        
-        parseNetworkUsage(from: output)
+        let iface = lastNetworkInterface.isEmpty ? "en0" : lastNetworkInterface
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.readAndPublishNetworkUsage(for: iface)
+        }
     }
-    
-    private func parseNetworkUsage(from output: String) {
-        let lines = output.components(separatedBy: "\n")
-        
-        for line in lines {
-            if line.hasPrefix("en0") && line.contains("/") {
-                let components = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                
-                if components.count >= 10 {
-                    let bytesReceived = Int64(components[6]) ?? 0
-                    let bytesSent = Int64(components[9]) ?? 0
-                    
-                    let currentTime = Date()
-                    let timeInterval = currentTime.timeIntervalSince(lastNetworkUpdateTime)
-                    
-                    if timeInterval > 0 && lastBytesReceived > 0 {
-                        let downloadSpeed = max(0, Double(bytesReceived - lastBytesReceived) / timeInterval)
-                        let uploadSpeed = max(0, Double(bytesSent - lastBytesSent) / timeInterval)
-                        
-                        let usage = NetworkUsage(
-                            downloadSpeed: downloadSpeed,
-                            uploadSpeed: uploadSpeed,
-                            timestamp: currentTime
-                        )
-                        
-                        currentUsage = usage
-                        updateCurrentUsageItem(usage: usage)
-                    }
-                    
-                    lastBytesReceived = bytesReceived
-                    lastBytesSent = bytesSent
-                    lastNetworkUpdateTime = currentTime
-                    break
+
+    private func readAndPublishNetworkUsage(for iface: String) {
+        guard let (bytesReceived, bytesSent) = getByteCounts(for: iface) else { return }
+
+        let currentTime = Date()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let timeInterval = currentTime.timeIntervalSince(self.lastNetworkUpdateTime)
+
+            if timeInterval > 0 && self.lastBytesReceived > 0 {
+                let downloadSpeed = max(0, Double(bytesReceived - self.lastBytesReceived) / timeInterval)
+                let uploadSpeed   = max(0, Double(bytesSent   - self.lastBytesSent)   / timeInterval)
+
+                let usage = NetworkUsage(downloadSpeed: downloadSpeed, uploadSpeed: uploadSpeed, timestamp: currentTime)
+                self.currentUsage = usage
+                self.updateCurrentUsageItem(usage: usage)
+            }
+
+            self.lastBytesReceived     = bytesReceived
+            self.lastBytesSent         = bytesSent
+            self.lastNetworkUpdateTime = currentTime
+        }
+    }
+
+    private func getByteCounts(for interfaceName: String) -> (received: Int64, sent: Int64)? {
+        var ifap: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifap) == 0, let firstAddr = ifap else { return nil }
+        defer { freeifaddrs(ifap) }
+
+        var received: Int64 = 0
+        var sent: Int64 = 0
+        var found = false
+
+        var cursor: UnsafeMutablePointer<ifaddrs>? = firstAddr
+        while let ifa = cursor {
+            let name = String(cString: ifa.pointee.ifa_name)
+            if name == interfaceName, ifa.pointee.ifa_addr?.pointee.sa_family == UInt8(AF_LINK) {
+                if let data = ifa.pointee.ifa_data {
+                    let stats = data.load(as: if_data.self)
+                    received = Int64(stats.ifi_ibytes)
+                    sent     = Int64(stats.ifi_obytes)
+                    found    = true
                 }
             }
+            cursor = ifa.pointee.ifa_next
         }
+
+        return found ? (received, sent) : nil
     }
     
     private func updateCurrentUsageItem(usage: NetworkUsage) {
@@ -241,14 +257,12 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     }
     
     private func formatNetworkSpeed(speed: Double) -> String {
-        let bytesPerSecond = speed
-        
-        if bytesPerSecond >= 1024 * 1024 {
-            return String(format: "%.1fM", bytesPerSecond / (1024 * 1024))
-        } else if bytesPerSecond >= 1024 {
-            return String(format: "%.1fK", bytesPerSecond / 1024)
+        if speed >= 1024 * 1024 {
+            return String(format: "%.1fM", speed / (1024 * 1024))
+        } else if speed >= 1024 {
+            return String(format: "%.1fK", speed / 1024)
         } else {
-            return String(format: "%.0fB", bytesPerSecond)
+            return String(format: "%.0fB", speed)
         }
     }
     
@@ -259,16 +273,14 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     }
     
     private func initializeNetworkState() {
-        let currentInterface = getCurrentNetworkInterface()
-        let currentIP = getCurrentNetworkIP()
-        
-        lastNetworkInterface = currentInterface
-        lastNetworkIP = currentIP
+        let interface = getCurrentNetworkInterface()
+        lastNetworkInterface = interface
+        lastNetworkIP = getCurrentNetworkIP(for: interface)
     }
     
     private func checkNetworkChange() {
         let currentInterface = getCurrentNetworkInterface()
-        let currentIP = getCurrentNetworkIP()
+        let currentIP = getCurrentNetworkIP(for: currentInterface)
         
         // Check if interface or IP changed
         if currentInterface != lastNetworkInterface || currentIP != lastNetworkIP {
@@ -317,32 +329,27 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         return "unknown"
     }
     
-    private func getCurrentNetworkIP() -> String {
-        let interface = getCurrentNetworkInterface()
-        if interface == "unknown" {
+    private func getCurrentNetworkIP(for interface: String? = nil) -> String {
+        let iface = interface ?? getCurrentNetworkInterface()
+        if iface == "unknown" {
             return "no_ip"
         }
         
         let task = Process()
         task.launchPath = "/usr/sbin/ifconfig"
-        task.arguments = [interface]
+        task.arguments = [iface]
         
         let pipe = Pipe()
         task.standardOutput = pipe
         task.launch()
         
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         
-        // Extract IP address from ifconfig output
-        let lines = output.components(separatedBy: "\n")
-        for line in lines {
+        for line in output.components(separatedBy: "\n") {
             if line.contains("inet ") && !line.contains("inet 127.0.0.1") {
-                let components = line.components(separatedBy: .whitespaces)
-                for i in 0..<components.count {
-                    if components[i] == "inet" && i + 1 < components.count {
-                        return components[i + 1]
-                    }
+                let parts = line.components(separatedBy: .whitespaces)
+                if let idx = parts.firstIndex(of: "inet"), idx + 1 < parts.count {
+                    return parts[idx + 1]
                 }
             }
         }
@@ -368,42 +375,30 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         }
     }
     
-    private func getPublicIPv4() -> String {
-        guard let url = URL(string: "https://api.ipify.org") else { return "Unknown" }
+    private func fetchPublicIP(from urlString: String) -> String {
+        guard let url = URL(string: urlString) else { return "Unknown" }
         
         let semaphore = DispatchSemaphore(value: 0)
         var result = "Unknown"
         
-        let task = URLSession.shared.dataTask(with: url) { data, response, error in
-            if let data = data, let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            if let data = data,
+               let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
                 result = ip
             }
             semaphore.signal()
-        }
+        }.resume()
         
-        task.resume()
         semaphore.wait()
-        
         return result
     }
     
+    private func getPublicIPv4() -> String {
+        fetchPublicIP(from: "https://api.ipify.org")
+    }
+    
     private func getPublicIPv6() -> String {
-        guard let url = URL(string: "https://api64.ipify.org") else { return "Unknown" }
-        
-        let semaphore = DispatchSemaphore(value: 0)
-        var result = "Unknown"
-        
-        let task = URLSession.shared.dataTask(with: url) { data, response, error in
-            if let data = data, let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
-                result = ip
-            }
-            semaphore.signal()
-        }
-        
-        task.resume()
-        semaphore.wait()
-        
-        return result
+        fetchPublicIP(from: "https://api64.ipify.org")
     }
     
     private func performSpeedTest() {
@@ -453,16 +448,16 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         showingSpeedTest.toggle()
         
         if showingSpeedTest {
-            // Show speed test results
             if let result = lastResult {
                 showSpeedTestResult(result: result)
             } else {
                 statusItem.button?.title = "No speed test yet"
             }
         } else {
-            // Show current usage
             if let usage = currentUsage {
-                updateCurrentUsageItem(usage: usage)
+                let down = formatNetworkSpeed(speed: usage.downloadSpeed)
+                let up   = formatNetworkSpeed(speed: usage.uploadSpeed)
+                statusItem.button?.title = "↓\(down) ↑\(up)"
             } else {
                 statusItem.button?.title = "Ready"
             }
@@ -587,38 +582,26 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     }
     
     // Interval setters
-    @objc private func setInterval5() {
-        setInterval(300)
-    }
+    @objc private func setInterval5()  { setInterval(.fiveMinutes) }
+    @objc private func setInterval10() { setInterval(.tenMinutes) }
+    @objc private func setInterval30() { setInterval(.thirtyMinutes) }
+    @objc private func setInterval60() { setInterval(.oneHour) }
     
-    @objc private func setInterval10() {
-        setInterval(600)
-    }
-    
-    @objc private func setInterval30() {
-        setInterval(1800)
-    }
-    
-    @objc private func setInterval60() {
-        setInterval(3600)
-    }
-    
-    private func setInterval(_ interval: TimeInterval) {
+    private func setInterval(_ interval: TestInterval) {
         testInterval = interval
         
         speedTestTimer?.invalidate()
-        speedTestTimer = Timer.scheduledTimer(withTimeInterval: testInterval, repeats: true) { _ in
-            self.runSpeedTest()
+        speedTestTimer = Timer.scheduledTimer(withTimeInterval: testInterval.rawValue, repeats: true) { [weak self] _ in
+            self?.runSpeedTest()
         }
         
         updateIntervalMenu()
     }
     
     private func updateIntervalMenu() {
-        interval5Item.state = testInterval == 300 ? .on : .off
-        interval10Item.state = testInterval == 600 ? .on : .off
-        interval30Item.state = testInterval == 1800 ? .on : .off
-        interval60Item.state = testInterval == 3600 ? .on : .off
+        for (interval, item) in intervalMenuItems {
+            item.state = interval == testInterval ? .on : .off
+        }
     }
     
     func applicationWillTerminate(_ notification: Notification) {

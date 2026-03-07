@@ -5,7 +5,7 @@ echo "  FusionNet Stat - Uninstaller"
 echo "======================================"
 echo ""
 
-PLIST_PATH="$HOME/Library/LaunchAgents/com.speedtestmonitor.plist"
+PLIST_PATH="$HOME/Library/LaunchAgents/com.fusionnetstat.plist"
 
 # Stop and unload the Launch Agent
 if [ -f "$PLIST_PATH" ]; then

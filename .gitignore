@@ -1,4 +1,6 @@
 SpeedTestMonitor
+NetworkMonitor
+NetworkMonitorV2
 TestNetworkOnly
 *.o
 *.log
