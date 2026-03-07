@@ -3,33 +3,51 @@ import Foundation
 
 class TestNetworkApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private var timer: Timer?
-    private var counter = 0
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusBar()
-        startTest()
+        testNetworkDetection()
     }
     
     private func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "🔄 Testing"
-        statusItem.button?.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        statusItem.button?.title = "Testing..."
     }
     
-    private func startTest() {
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
-            self.testNetwork()
+    private func testNetworkDetection() {
+        print("Testing network detection...")
+        
+        // Test each method
+        testMethod1()
+        testMethod2()
+        testMethod3()
+        
+        DispatchQueue.main.async {
+            self.statusItem.button?.title = "Done"
         }
     }
     
-    private func testNetwork() {
-        counter += 1
-        print("=== Test \(counter) ===")
-        
+    private func testMethod1() {
+        print("Testing method 1: networksetup")
         let task = Process()
-        task.launchPath = "/usr/sbin/netstat"
-        task.arguments = ["-I", "en0", "-b"]
+        task.launchPath = "/usr/sbin/networksetup"
+        task.arguments = ["-getairportnetwork", "en0"]
+        
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        task.launch()
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        print("Method 1 result: \(output)")
+    }
+    
+    private func testMethod2() {
+        print("Testing method 2: system_profiler")
+        let task = Process()
+        task.launchPath = "/usr/sbin/system_profiler"
+        task.arguments = ["SPAirPortDataType"]
         
         let pipe = Pipe()
         task.standardOutput = pipe
@@ -37,28 +55,25 @@ class TestNetworkApp: NSObject, NSApplicationDelegate {
         
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: data, encoding: .utf8) ?? ""
-        
-        print("Netstat output length: \(output.count)")
-        
-        let lines = output.components(separatedBy: "\n")
-        for line in lines {
-            if line.hasPrefix("en0") && line.contains("/") {
-                print("Found: \(line.prefix(50))...")
-                DispatchQueue.main.async {
-                    self.statusItem.button?.title = "🔄 \(self.counter)"
-                }
-                return
-            }
-        }
-        
-        print("No en0 line found!")
-        DispatchQueue.main.async {
-            self.statusItem.button?.title = "❌ \(self.counter)"
-        }
+        print("Method 2 result: \(output.prefix(200))...")
     }
     
-    func applicationWillTerminate(_ notification: Notification) {
-        timer?.invalidate()
+    private func testMethod3() {
+        print("Testing method 3: airport utility")
+        let airportPath = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+        
+        let task = Process()
+        task.launchPath = airportPath
+        task.arguments = ["-I"]
+        
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        task.launch()
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        print("Method 3 result: \(output)")
     }
 }
 

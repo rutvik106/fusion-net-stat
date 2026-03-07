@@ -220,7 +220,7 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async {
             self.currentUsageItem.title = "Current: ↓\(downloadText) ↑\(uploadText)"
             
-            // Only update menu bar if currently showing usage
+            // Update menu bar with current usage when not showing speed test
             if !self.showingSpeedTest {
                 self.statusItem.button?.title = "↓\(downloadText) ↑\(uploadText)"
             }
@@ -390,18 +390,33 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     }
     
     private func measureDownloadSpeed() -> Double {
-        // Use fast.com's speed test API
-        guard let url = URL(string: "https://fast.com/api/fastscore") else { return 0 }
+        // Use multiple speed test servers for better accuracy
+        let testUrls = [
+            "https://speed.cloudflare.com/__down?bytes=25000000", // 25MB
+            "https://proof.ovh.net/files/100Mb.dat", // 100MB
+            "https://speedtest.tele2.net/100MB.zip" // 100MB
+        ]
         
+        for urlString in testUrls {
+            guard let url = URL(string: urlString) else { continue }
+            
+            let speed = measureDownloadSpeedFromUrl(url)
+            if speed > 0 {
+                return speed
+            }
+        }
+        
+        return 0
+    }
+    
+    private func measureDownloadSpeedFromUrl(_ url: URL) -> Double {
         let startTime = Date()
         var totalBytes: Int64 = 0
-        
         let semaphore = DispatchSemaphore(value: 0)
         
         let task = URLSession.shared.dataTask(with: url) { data, response, error in
-            if let httpResponse = response as? HTTPURLResponse,
-               let contentLength = httpResponse.allHeaderFields["Content-Length"] as? String {
-                totalBytes = Int64(contentLength) ?? 0
+            if let data = data, error == nil {
+                totalBytes = Int64(data.count)
             }
             semaphore.signal()
         }
