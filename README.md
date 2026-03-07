@@ -1,79 +1,103 @@
-# Network Monitor - macOS Menu Bar App
+# FusionNet Stat — macOS Menu Bar App
 
-A lightweight macOS menu bar application that displays real-time download and upload speeds.
+A lightweight macOS menu bar app that shows **real-time network usage** and **internet speed test results** — always visible, no digging through Settings.
+
+---
 
 ## Features
 
-- Real-time network speed monitoring in the macOS menu bar
-- Displays download (↓) and upload (↑) speeds
-- Automatic unit conversion (B/s, KB/s, MB/s)
-- Clean, minimal interface
-- Runs as a background application (no dock icon)
-- Auto-detects active network interface (en0-en4)
+- **Real-time usage** — live ↓ download and ↑ upload speeds updated every second
+- **Speed tests** — measures actual internet speed (Mbps), ping in ms
+- **Alternating display** — toggles between live usage and speed test results every 5 seconds
+- **Public IP** — shows your IPv4 and IPv6 addresses, refreshable on demand
+- **Auto speed test on network change** — automatically tests when you switch WiFi or hotspot
+- **Configurable intervals** — run speed tests every 5, 10, 30, or 60 minutes
+- **Auto-starts on login** — always running in the background
+- **No dock icon** — lives quietly in the menu bar
+
+---
 
 ## Requirements
 
-- macOS 10.12 or later
-- Xcode Command Line Tools (for Swift compiler)
-- Network monitoring permissions
+- macOS 10.14 or later
+- Xcode Command Line Tools
+
+---
 
 ## Installation
 
-1. Clone or download this repository
-2. Make the scripts executable:
-   ```bash
-   chmod +x build.sh start.sh
-   ```
-3. Build the application:
-   ```bash
-   ./build.sh
-   ```
+### Step 1 — Install Xcode Command Line Tools (one-time)
 
-## Usage
-
-### Option 1: Run in background (recommended)
+Open Terminal and run:
 ```bash
-./start.sh
+xcode-select --install
 ```
-This will start the app in the background and you can close the terminal.
+A dialog will appear — click **Install** and wait for it to finish.
 
-### Option 2: Run in foreground
+### Step 2 — Download the project
+
+Download or clone this repository to your Mac, then open Terminal and navigate to the folder:
 ```bash
-./NetworkMonitor
-```
-Keep the terminal open while using.
-
-## Stopping the Application
-
-To stop the background process:
-```bash
-pkill -f NetworkMonitor
+cd /path/to/windsurf-project
 ```
 
-Or use Activity Monitor to find and quit "NetworkMonitor".
+### Step 3 — Run the installer
+```bash
+chmod +x install.sh
+./install.sh
+```
 
-## What You'll See
+That's it! The app will appear in your menu bar and will auto-start on every login.
 
-Once launched, the app will appear in your macOS menu bar showing:
-- **Download speed** (↓): Current download rate
-- **Upload speed** (↑): Current upload rate
+---
 
-The speeds update every second and automatically scale between:
-- **B/s** for bytes per second
-- **K/s** for kilobytes per second  
-- **M/s** for megabytes per second
+## What You'll See in the Menu Bar
+
+The display alternates every 5 seconds:
+
+| Mode | Example |
+|------|---------|
+| **Live usage** | `↓50.2K ↑5.1B` |
+| **Speed test** | `12ms ↓148.5 ↑22.3` |
+
+---
+
+## Right-Click Menu
+
+| Item | Description |
+|------|-------------|
+| **Test Now** | Run a speed test immediately |
+| **Current: ↓X ↑X** | Live network usage |
+| **IPv4 / IPv6** | Your public IP addresses |
+| **Refresh IP** | Re-fetch your public IPs |
+| **Test Interval** | Set how often speed tests run |
+| **Last test** | Timestamp and results of last test |
+| **Quit** | Stop the app |
+
+---
+
+## Uninstall
+
+```bash
+./uninstall.sh
+```
+
+This stops the app and removes the auto-start entry. No other files are modified.
+
+---
 
 ## Troubleshooting
 
-- If speeds show as 0.0B, the app couldn't find an active network interface
-- The app automatically tries en0, en1, en2, en3, en4 interfaces
-- Make sure you're connected to a network
-- To quit the app, use `pkill -f NetworkMonitor` or Activity Monitor
+- **Speed test stuck on "Testing..."** — wait up to 30 seconds; it downloads a test file to measure speed
+- **Shows "Ready" with no data** — make sure you're connected to a network
+- **Check logs** — `cat /tmp/SpeedTestMonitor.log`
 
-## Technical Details
+---
 
-- Built with Swift and Cocoa
-- Uses `netstat -b -I [interface]` to get network statistics
-- Updates every second for real-time monitoring
-- Runs as a background accessory application
-- Auto-detects the first available network interface
+## Tech Stack
+
+- Swift + Cocoa + Foundation
+- `netstat` for real-time network usage
+- Cloudflare / OVH speed test files for download measurement
+- `api.ipify.org` for public IP detection
+- macOS Launch Agents for auto-start

@@ -1,0 +1,6 @@
+SpeedTestMonitor
+TestNetworkOnly
+*.o
+*.log
+*.err
+.DS_Store

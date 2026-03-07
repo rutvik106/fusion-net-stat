@@ -25,11 +25,16 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
     private var speedTestTimer: Timer?
     private var networkUsageTimer: Timer?
     private var displayToggleTimer: Timer?
+    private var networkChangeTimer: Timer?
     private var lastResult: SpeedTestResult?
     private var currentUsage: NetworkUsage?
     private var publicIP: PublicIP?
     private var testInterval: TimeInterval = 300 // 5 minutes default
     private var showingSpeedTest = false // Toggle state
+    
+    // Network change detection
+    private var lastNetworkInterface = ""
+    private var lastNetworkIP = ""
     
     // Network usage tracking
     private var lastBytesReceived: Int64 = 0
@@ -133,6 +138,14 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         networkUsageTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             self.updateNetworkUsage()
         }
+        
+        // Start network change detection (every 5 seconds)
+        networkChangeTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+            self.checkNetworkChange()
+        }
+        
+        // Initialize network state
+        initializeNetworkState()
         
         // Get public IP on startup
         DispatchQueue.global(qos: .utility).async {
@@ -243,6 +256,98 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .utility).async {
             self.updatePublicIP()
         }
+    }
+    
+    private func initializeNetworkState() {
+        let currentInterface = getCurrentNetworkInterface()
+        let currentIP = getCurrentNetworkIP()
+        
+        lastNetworkInterface = currentInterface
+        lastNetworkIP = currentIP
+    }
+    
+    private func checkNetworkChange() {
+        let currentInterface = getCurrentNetworkInterface()
+        let currentIP = getCurrentNetworkIP()
+        
+        // Check if interface or IP changed
+        if currentInterface != lastNetworkInterface || currentIP != lastNetworkIP {
+            print("Network changed from \(lastNetworkInterface) (\(lastNetworkIP)) to \(currentInterface) (\(currentIP))")
+            
+            // Update stored values
+            lastNetworkInterface = currentInterface
+            lastNetworkIP = currentIP
+            
+            // Trigger speed test on network change
+            DispatchQueue.main.async {
+                print("Triggering speed test due to network change")
+                self.runSpeedTest()
+            }
+            
+            // Update public IP since network changed
+            DispatchQueue.global(qos: .utility).async {
+                self.updatePublicIP()
+            }
+        }
+    }
+    
+    private func getCurrentNetworkInterface() -> String {
+        let task = Process()
+        task.launchPath = "/usr/sbin/netstat"
+        task.arguments = ["-rn", "-f", "inet"]
+        
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.launch()
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        
+        // Look for default route interface
+        let lines = output.components(separatedBy: "\n")
+        for line in lines {
+            if line.hasPrefix("default") || line.hasPrefix("0.0.0.0") {
+                let components = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+                if components.count >= 6 {
+                    return components[5] // Interface name
+                }
+            }
+        }
+        
+        return "unknown"
+    }
+    
+    private func getCurrentNetworkIP() -> String {
+        let interface = getCurrentNetworkInterface()
+        if interface == "unknown" {
+            return "no_ip"
+        }
+        
+        let task = Process()
+        task.launchPath = "/usr/sbin/ifconfig"
+        task.arguments = [interface]
+        
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.launch()
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        
+        // Extract IP address from ifconfig output
+        let lines = output.components(separatedBy: "\n")
+        for line in lines {
+            if line.contains("inet ") && !line.contains("inet 127.0.0.1") {
+                let components = line.components(separatedBy: .whitespaces)
+                for i in 0..<components.count {
+                    if components[i] == "inet" && i + 1 < components.count {
+                        return components[i + 1]
+                    }
+                }
+            }
+        }
+        
+        return "no_ip"
     }
     
     private func updatePublicIP() {
@@ -520,6 +625,7 @@ class SpeedTestMonitor: NSObject, NSApplicationDelegate {
         speedTestTimer?.invalidate()
         networkUsageTimer?.invalidate()
         displayToggleTimer?.invalidate()
+        networkChangeTimer?.invalidate()
     }
 }
 
