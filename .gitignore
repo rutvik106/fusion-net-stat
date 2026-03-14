@@ -7,7 +7,7 @@ TestNetworkOnly
 *.build
 
 # DMG files
-*.dmg
+# *.dmg
 
 # Temporary files
 dmg_temp/
